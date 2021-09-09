@@ -38,3 +38,5 @@ at the Gene Expression Omnibus (GEO) at [GSE121638](https://www.ncbi.nlm.nih.gov
 and quality control procedures were applied to count-level data from the HCC SCRC dataset: [GSE98638](https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE98638).
 
 ## Processed Data
+
+Due to space limitations of a github repo, full outputs of alignments are available [10.5281/zenodo.4311824](https://zenodo.org/record/4311825). Monocle embedding of the renal clear cell carcinoma Tregs, can be accessed ProcessedData folder under ccRCCTregs.monocle.rds.
