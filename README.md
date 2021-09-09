@@ -41,6 +41,5 @@ and quality control procedures were applied to count-level data from the HCC SCR
 
 Due to space limitations of a github repo, full outputs of alignments are available [10.5281/zenodo.4311824](https://zenodo.org/record/4311825). Monocle embedding of the renal clear cell carcinoma Tregs, can be accessed ProcessedData folder under ccRCCTregs.monocle.rds.
 
-*****
 ## Contact
 Questions, comments, suggestions, please feel free to contact Nick Borcherding via this repository, [email](mailto:ncborch@gmail.com), or using [twitter](https://twitter.com/theHumanBorch). 
