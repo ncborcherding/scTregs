@@ -1,0 +1,613 @@
+---
+title: "Renal SC Treg Code"
+author: "Nick Borcherding"
+date: "8/28/2018"
+output: html_document
+---
+# Set-up
+
+## Load Libraries
+Seurat takes a lot of required sub packages - so for no it will be the only package loaded, until all the processing steps are complete. This set of code was built on Seurat v2.3.4. This code was originally written in the Summer of 2018 - it has since been updated based on revisions requests and to work on R v 4.1. 
+
+```{r}
+library(Seurat)
+```
+
+##Load Data
+```{r}
+PB.data <- Read10X(data.dir = "./ProcessedData/SequencingRuns/GU0700/Peripheral/filtered_gene_bc_matrices/GRCh38/")
+PB.700 <- CreateSeuratObject(raw.data = PB.data, project = "PB_700")
+
+TM.data <- Read10X(data.dir = "./ProcessedData/SequencingRuns/GU0700/Tumor/filtered_gene_bc_matrices/GRCh38/")
+TM.700 <- CreateSeuratObject(raw.data = TM.data, project = "TM_700")
+
+PB.data2 <- Read10X(data.dir = "./ProcessedData/SequencingRuns/GU0715/Peripheral/filtered_gene_bc_matrices/GRCh38/")
+PB.715 <- CreateSeuratObject(raw.data = PB.data2, project = "PB_715")
+
+TM.data2 <- Read10X(data.dir = "./ProcessedData/SequencingRuns/GU0715/Tumor/filtered_gene_bc_matrices/GRCh38/")
+TM.715 <- CreateSeuratObject(raw.data = TM.data2, project = "TM_715")
+
+PB.data3 <- Read10X(data.dir = "./ProcessedData/SequencingRuns/GU0744/Peripheral/filtered_gene_bc_matrices/GRCh38/")
+PB.744 <- CreateSeuratObject(raw.data = PB.data3, project = "PB_744")
+
+TM.data3 <- Read10X(data.dir = "./ProcessedData/SequencingRuns/GU0744/Tumor/filtered_gene_bc_matrices/GRCh38/")
+TM.744 <- CreateSeuratObject(raw.data = TM.data3, project = "TM_744")
+```
+
+## Merging the tumor and peripheral blood runs into a single patient samples
+
+Unique cell ids per patient/sample type is important for the next steps of combining and correcting for batch effect. 
+```{r}
+Pt700 <- MergeSeurat(object1 = PB.700, object2 = TM.700, min.cells = 5, min.genes = 200, project = "Pt700", add.cell.id1 = "PB.700", add.cell.id2 = "TM.700", do.normalize = FALSE)
+
+Pt715 <- MergeSeurat(object1 = PB.715, object2 = TM.715, min.cells = 5, min.genes = 200, project = "Pt715", add.cell.id1 = "PB.715", add.cell.id2 = "TM.715", do.normalize = FALSE)
+
+Pt744 <- MergeSeurat(object1 = PB.744, object2 = TM.744, min.cells = 5, min.genes = 200, project = "Pt744", add.cell.id1 = "PB.744", add.cell.id2 = "TM.744", do.normalize = FALSE)
+```
+
+
+## General filtering and scalining
+```{r}
+Pt700 <- FilterCells(Pt700, subset.names = "nGene", low.thresholds = 200, high.thresholds = Inf)
+Pt700 <- NormalizeData(Pt700)
+Pt700 <- ScaleData(Pt700, display.progress = F)
+
+Pt715 <- FilterCells(Pt715, subset.names = "nGene", low.thresholds = 200, high.thresholds = Inf)
+Pt715 <- NormalizeData(Pt715)
+Pt715 <- ScaleData(Pt715, display.progress = F)
+
+Pt744 <- FilterCells(Pt744, subset.names = "nGene", low.thresholds = 200, high.thresholds = Inf)
+Pt744 <- NormalizeData(Pt744)
+Pt744 <- ScaleData(Pt744, display.progress = F)
+```
+
+## Finding variable genes 
+
+The canonical correlation correction relies on variable genes, the first step is finding the variable genes (similar to any tSNE workflow)
+```{r}
+Pt700 <- FindVariableGenes(object = Pt700 , do.plot = F, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+
+Pt715 <- FindVariableGenes(object = Pt715 , do.plot = F, mean.function = ExpMean, dispersion.function = LogVMR,  x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+
+Pt744 <- FindVariableGenes(object = Pt744 , do.plot = F, mean.function = ExpMean, dispersion.function = LogVMR, x.low.cutoff = 0.0125, x.high.cutoff = 3, y.cutoff = 0.5)
+```
+
+Next we build a reference of the top 1000 variable genes
+```{r}
+g.1 <- head(rownames(Pt700@hvg.info), 1000)
+g.2 <- head(rownames(Pt715@hvg.info), 1000)
+g.3 <- head(rownames(Pt744@hvg.info), 1000)
+
+genes.use <- unique(c(g.1, g.2, g.3))
+
+genes.use <- intersect(genes.use, rownames(Pt700@scale.data))
+genes.use <- intersect(genes.use, rownames(Pt715@scale.data))
+genes.use <- intersect(genes.use, rownames(Pt744@scale.data))
+```
+
+## Combining the samples
+```{r}
+data <- list(Pt700, Pt715, Pt744)
+```
+
+Strap in, this is going to take awhile.
+```{r}
+immune.combined2 <- RunMultiCCA(data, genes.use = genes.use, num.ccs = 30)
+```
+
+Before we can visualize our canonical correlation correction, we need to add meta data that includes the patient and sample type - this goes back to naming cell.ids "PB.700". We are going to split the string into two strings - "PB" and "700" for each single cell and then add that in the meta data as "Type" and "Patient", respectively.
+```{r}
+library(stringr)
+test <- str_split_fixed(immune.combined2@meta.data$orig.ident, "[.]", 2)
+rownames(test) <- immune.combined2@cell.names
+colnames(test) <- c("Type", "Patient")
+test <- as.data.frame(test)
+immune.combined2 <- AddMetaData(object = immune.combined2, metadata = test)
+```
+
+
+## Visualize CCA
+```{r}
+p1 <- DimPlot(object = immune.combined2, reduction.use = "cca", group.by = "Patient", 
+    pt.size = 0.5, do.return = TRUE)
+p2 <- VlnPlot(object = immune.combined2, features.plot = "CC1", group.by = "Patient", 
+    do.return = TRUE)
+plot_grid(p1, p2)
+```
+
+```{r}
+p3 <- DimPlot(object = immune.combined2, reduction.use = "cca", group.by = "Type", 
+    pt.size = 0.5, do.return = TRUE)
+p4 <- VlnPlot(object = immune.combined2, features.plot = "CC1", group.by = "Type", 
+    do.return = TRUE)
+plot_grid(p3, p4)
+```
+
+```{r}
+p5 <- MetageneBicorPlot(immune.combined2, grouping.var = "Patient", dims.eval = 1:30, 
+    display.progress = FALSE)
+p5
+```
+
+## Dimensional reduction using CCA data
+
+This will take a little while too - I am going to start with 15 dimensions to align the subspace based on the graph above. The graph above has a very unusual diversion - patient 744 does not have B cells, so potentially that is the variance. 
+```{r}
+immune.combined2 <- AlignSubspace(immune.combined2, reduction.type = "cca", grouping.var = "Patient", dims.align = 1:15)
+
+
+p6 <- VlnPlot(object = immune.combined2, features.plot = "ACC1", group.by = "Patient", 
+    do.return = TRUE)
+p7 <- VlnPlot(object = immune.combined2, features.plot = "ACC2", group.by = "Patient", 
+    do.return = TRUE)
+plot_grid(p6, p7)
+```
+
+##Visualization
+
+Fining clusters and calculating the tSNE projection
+```{r}
+immune.combined2 <- FindClusters(immune.combined2, reduction.type = "cca.aligned",
+                                    dims.use = 1:20, resolution=1.2)
+immune.combined2 <- RunTSNE(immune.combined2,
+                               reduction.use = "cca.aligned",
+                               dims.use = 1:20)
+
+p6 <- TSNEPlot(immune.combined2, do.return = T, pt.size = 0.3, group.by = "Patient")
+p7 <- TSNEPlot(immune.combined2, do.label = T, do.return = T, pt.size = 0.3)
+plot_grid(p6, p7)
+
+ggsave("Renal_TSNE_3pt.pdf", height=4, width=9)
+```
+
+Other methods to examine the tSNE clustering
+```{r}
+p8 <- TSNEPlot(immune.combined2, do.return = T, pt.size = 0.3, group.by = "Type")
+ggsave("Renal_TSNE_3pt_Type.pdf", p8, height=4, width=4.5)
+p9 <- TSNEPlot(immune.combined2, do.label = T, do.return = T, pt.size = 0.3)
+ggsave("Renal_TSNE_3pt_byCluster.pdf", p9, height=4, width=4.75)
+plot_grid(p8, p9)
+
+ggsave("Renal_TSNE_3pt_byType.pdf", height=4, width=9)
+```
+
+***
+#Identify Tregs
+
+Isolating regulatory T cells from using common Markers
+```{r}
+FeaturePlot(object = immune.combined2, features.plot = c("FOXP3"), cols.use = c("grey", "#D55E00"), no.legend = FALSE,
+            pt.size = 0.35)
+ggsave("Renal_TSNE_FOXP3_3Pt.pdf", height=4, width=4.5)
+```
+
+```{r}
+FeaturePlot(object = immune.combined2, features.plot = c("IL2RA"), cols.use = c("grey", "#D55E00"), no.legend = FALSE,
+            pt.size = 0.35)
+ggsave("Renal_TSNE_CD25_3Pt.pdf", height=4, width=4.5)
+```
+
+```{r}
+FeaturePlot(object = immune.combined2, features.plot = c("IL7R"), cols.use = c("grey", "#D55E00"), no.legend = FALSE,
+            pt.size = 0.35)
+ggsave("Renal_TSNE_CD127_3Pt.pdf", height=4, width=4.5)
+```
+
+
+#Looking at cluster composition
+
+Here I am looking at the breakdown of each cluster by the composition of tumor versus peripheral blood cells
+```{r}
+freq_table <- prop.table(x = table(immune.combined2@ident, immune.combined2@meta.data[, "Type"]), 
+    margin = 2)
+freq_table <- as.data.frame(freq_table)
+ggplot(freq_table, aes(x=Var1, y=Freq, fill=Var2)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())
+ggsave("CompositionProp.pdf", width=4, height=2)
+```
+
+***
+#Identifying the clusters
+
+This method uses the SingleR package to perform correlations across purified reference cells. I have tried this step with both the average expression by cluster and for every cell. The mean by cluster seems to be a clearer representation of the content of the clusters.
+
+First step is to take the average of the cluster expression values
+```{r}
+Average <- AverageExpression(immune.combined2, genes.use = NULL, return.seurat = T, use.scale = FALSE, use.raw = T)
+```
+
+Making a SingleR object from the Seurat and running the spearman correlation
+```{r}
+library(SingleR)
+singler2 = CreateSinglerObject(Average@raw.data, project.name = "Renal", annot = NULL, project.name, min.genes = 200,
+  technology = "10X", species = "Human", citation = "",
+  ref.list = list(), normalize.gene.length = F, variable.genes = "de",
+  fine.tune = T, do.signatures = T, clusters = NULL, do.main.types = T, 
+  reduce.file.size = T, numCores = SingleR.numCores)
+
+singler2$seurat = Average # (optional)
+singler2$meta.data$orig.ident = Average@meta.data$orig.ident # the original identities, if not supplied in 'annot'
+
+```
+
+Complex Heatmap of cell Type
+```{r}
+#pdf("AverageHeatmap2.pdf", width=10, height=8)
+SingleR.DrawHeatmap(singler2$singler[[1]]$SingleR.single, top.n = 30, clusters=singler2$singler[[1]]$SingleR.single$cell.names)
+
+#dev.off()
+```
+
+Simplified Heatmap of cell type
+```{r}
+#pdf("AverageHeatmap_simple.pdf", width=10, height=8)
+SingleR.DrawHeatmap(singler2$singler[[1]]$SingleR.single.main, top.n = 8, clusters=singler2$singler[[1]]$SingleR.single.main$cell.names)
+
+#dev.off()
+```
+
+***
+
+#Isolating Tregs in Cluster 14
+
+Subseting and defining the new identity of the Seurat object as "Type", which will allow for the comparison between peripheral blood (PB) and tumor (TM) Tregs.
+```{r}
+subset <- SubsetData(object =immune.combined2,  subset.name = "ident", accept.value = c("14"), subset.raw = T)
+subset2 <- SetAllIdent(object = subset, id = "Type")
+
+sample.info <- data.frame(cell.names = subset2@cell.names)
+sample.info$cluster <- subset2@ident
+sample.info %>%
+  group_by(cluster) %>%
+  summarise(n=n())
+```
+
+Differential gene expression comparing TM vs PB Tregs. This is using the Wilcoxon Rank Sum Test (the default), but I have specified not to filter for genes that have low expression (logfc.threshold) or percent expression (min.pct). 
+```{r}
+object.markers <- FindMarkers(object = subset2, only.pos = F, ident.1 = "TM", ident.2="PB", logfc.threshold=0, min.pct = 0, pseudocount.use = 0.01)
+#
+object.markers$names <- rownames(object.markers)
+
+library(dplyr)
+#Going to use dplyr here to add a new variable called Difference, which is the the percentage (pct) of TM Tregs - PB Tregs
+object.markers <- object.markers %>%
+  mutate(Difference = pct.1 - pct.2)
+```
+
+Visualizing the difference in log-fold change and percentage expression between the above differential comparison. This also uses ggrepel function "geom_label_repel" to identify interesting outliers
+```{r}
+library(ggplot)
+library(ggrepel)
+
+ggplot(object.markers, aes(x=Difference, y=avg_logFC)) + 
+  geom_point(size=0.5, color="#999999") + 
+  geom_label_repel(data=subset(object.markers, avg_logFC >= 1 & Difference >= 0.2 & pct.2 <= 0.05), aes(label=names), label.padding = 0.1, fill="#D55E00", segment.size = 0.25, size=2.5)
+ggsave("TopMarkerHits_renal.pdf", height=4, width=4)
+```
+
+Top 8 genes by log-fold change that are increased and decreased in the comparison of Tregs.
+```{r}
+#Organizing anf filtering the differential gene expression by logFC and Qval/Difference, respectively
+object.order <- object.markers[order(object.markers$avg_logFC),]
+object.order <- subset(object.order, p_val_adj < 0.05 & Difference > 0.05 | p_val_adj < 0.05 & Difference < -0.05)
+
+ggplot(data = subset(object.order, avg_logFC %in% avg_logFC[1 : 8]), 
+            aes(y=avg_logFC, x=reorder(names, avg_logFC), fill="grey")) +
+            geom_bar(stat="identity", color="black", lwd=0.25, alpha=0.85) + 
+            geom_hline(yintercept = 0) + 
+            guides(fill=FALSE)+
+            theme_classic() + 
+            theme(axis.title = element_blank()) + 
+  coord_flip()
+ggsave("Downregulated_TItregs.pdf", width=2, height=2)
+
+object.order <- object.order[order(object.order$avg_logFC, decreasing = T),]
+ggplot(data = subset(object.order, avg_logFC %in% avg_logFC[1 : 8]), 
+            aes(y=avg_logFC, x=reorder(names, avg_logFC), fill="grey")) +
+            geom_bar(stat="identity", color="black", lwd=0.25, alpha=0.85) + 
+            geom_hline(yintercept = 0) + 
+            guides(fill=FALSE)+
+            theme_classic() + 
+            theme(axis.title = element_blank()) + 
+  coord_flip()
+ggsave("Upregulated_TItregs.pdf", width=2, height=2)
+```
+
+Writing the results of the differential expression
+```{r}
+write.table(object.markers, file="Renal_TMvPB_differentialMarkers.txt", sep="\t",append=F)
+```
+
+
+***
+#Monocle Analysis
+
+Using the subset for Tregs without the change in identity (subset object), this next step will import the expression data into the Monocle package, and perform the ordinal construction of the manifold. 
+
+```{r}
+library(monocle)
+subset <- AddMetaData(object = subset, metadata = sample.info)
+monocle <- importCDS(subset, import_all = TRUE)
+monocle <- estimateSizeFactors(monocle)
+monocle <- suppressWarnings(estimateDispersions(monocle))
+monocle <- detectGenes(monocle, min_expr = 0.1)
+expressed_genes <- row.names(subset(fData(monocle), num_cells_expressed >= 10))
+diff_test_res <- differentialGeneTest(monocle[expressed_genes,], fullModelFormulaStr = "~Type")
+#filtering for ordering genes by any gene with a qval < 0.01
+ordering_genes <- row.names (subset(diff_test_res, qval < 0.01))
+monocle <- setOrderingFilter(monocle, ordering_genes)
+monocle <- reduceDimension(monocle, method = 'DDRTree')
+monocle <- orderCells(monocle)
+
+plot_cell_trajectory(monocle, color_by = "State")
+plot_cell_trajectory(monocle, color_by = "Patient")
+```
+
+Series of cell trajectory blots based on interesting genes or variables.
+```{r}
+plot_cell_trajectory(monocle, markers_linear=F, show_branch_points=F, color_by = "Pseudotime")  + 
+  scale_color_gradient(low="grey", high="#D55E00")
+ggsave("CellTrajectory_PseudoTime.pdf", height=4.25, width=4.5)
+
+plot_cell_trajectory(monocle, markers = c("CD177", "TNFRSF18", "TNFRSF4"), markers_linear=F, use_color_gradient=T, show_branch_points=F)
+ggsave("RCC_Trajectory_CF1.eps", width=5.5, height=2.5)
+
+plot_cell_trajectory(monocle, markers = c("CTLA4", "CCR8", "IKZF2"), markers_linear=F, use_color_gradient=T, show_branch_points=F)
+ggsave("RCC_Trajectory_NP.eps", width=5.5, height=2.5)
+
+plot_cell_trajectory(monocle, markers = c("JUNB", "CXCR4", "EGR1"), markers_linear=F, use_color_gradient=T, show_branch_points=F)
+ggsave("RCC_Trajectory_CF2.eps", width=5.5, height=2.5)
+
+plot_cell_trajectory(monocle, color_by = "Type") +
+   scale_color_manual(breaks = c("PB", "TM"), values=c("#999999", "#D55E00"))
+ggsave("CellTrajectory_Type.pdf", height=4.25, width=4.5)
+```
+
+Violin Plots for commonly upregulated genes in tumor-infiltrating Tregs
+```{r}
+plot_genes_violin(monocle[c("CTLA4", "ICOS", "TNFRSF4", "TNFRSF9", "TNFRSF18", "CCR8", "CD177", "LAYN", "MAGEH1", "NR4A1"),],
+    grouping = "Type",
+    color_by = "Type",
+    cell_size = 3,
+    ncol = 2) + 
+  theme_classic()
+ggsave("Renal_sharedGenes_VP.pdf", height=6, width=4)
+```
+
+
+Performing differential gene expression analysis using the pseudo-time variable created in the construction of the manifold.
+```{r}
+diff_test_res2 <- differentialGeneTest(monocle[expressed_genes,], fullModelFormulaStr = "~sm.ns(Pseudotime)")
+sig_gene_names2 <- rownames(diff_test_res2[head(order(diff_test_res2$qval),100),])
+
+plot_genes_in_pseudotime(monocle[sig_gene_names2[1:18],], ncol=3, color_by = "Type") +
+   scale_color_manual(breaks = c("PB", "TM"), values=c("#999999", "#D55E00"))
+ggsave("Renal_combinedTregs_top18PThits.pdf", width=4.5, height=7)
+```
+
+
+Branching analysis comparing the two distinct cell fates of TM Tregs
+```{r}
+BEAM_res <- BEAM(monocle, branch_point = 1, cores = 2)
+BEAM_res <- BEAM_res[order(BEAM_res$qval),]
+```
+
+The T cell receptor genes likely spurious and a result of T cell activation (the loci will increase expression upon activation), so we will filter them out.
+```{r}
+BEAM_res_subset <- dplyr::filter(BEAM_res, !grepl("TRBV",gene_short_name))
+BEAM_res_subset <- dplyr::filter(BEAM_res_subset, !grepl("TRAV",gene_short_name))
+rownames(BEAM_res_subset) <- BEAM_res_subset$gene_short_name
+write.table(BEAM_res_subset, file="RCC_BEAM.txt", sep="\t",append=F)
+```
+
+```{r}
+plot_genes_branched_heatmap(monocle[row.names(subset(BEAM_res_subset,
+                                          qval < 1e-5 & use_for_ordering == TRUE)),],
+                                          branch_point = 1,
+                                          num_clusters = 7,
+                                          cores = 1,
+                                          use_gene_short_name = T,
+                                          show_rownames = T)
+```
+
+
+###Getting more detailed CD177 differential gene expression
+```{r}
+plot_cell_trajectory(monocle, markers_linear=F, show_branch_points=F, color_by = "CD177")  + 
+  scale_color_manual(values=c("grey", "#D55E00"))
+ggsave("CellTrajectory_CD177.pdf", height=4.25, width=4.5)
+```
+
+
+*** 
+#Defining the state of Tregs by the branching of the monocle manifold
+
+Taking the branch points from the monocle and adding it into the meta data of the original Seurat object "subset"
+```{r}
+x <- as.data.frame(monocle@reducedDimS)
+x <- as.data.frame(t(x))
+x$state <- as.data.frame(monocle$State)
+x$state <- as.numeric(unlist(x$state))
+x$names <- rownames(x)
+
+
+x <- x %>%
+  mutate(fate = ifelse(state == 1, "Pre", ifelse(state == 5, "CellFate2", "CellFate1")))
+x <- x[,-c(1:2)]
+
+
+y <- grep('^CD177', rownames(subset@raw.data), value = FALSE)
+sample.info <- data.frame(cell.names = subset@cell.names)
+sample.info$CD177 = 'Neg'
+sample.info$CD177[which(subset@raw.data[rownames(subset@raw.data)[y], ] > 1)] <- 'Pos'
+
+sample.info <- merge(sample.info, x, by.x="cell.names", by.y="names")
+row.names(sample.info) <- sample.info$cell.names
+
+subset <- AddMetaData(subset, sample.info)
+```
+
+
+
+Examining the relative composition of the CD177 by cell fates
+```{r}
+prop.table(table(subset@meta.data$fate, subset@meta.data$CD177), margin = 1)
+
+```
+
+```{r}
+freq_table <- prop.table(x = table(subset@meta.data[, "CD177"], subset@meta.data[, "fate"]), 
+    margin = 2)
+freq_table <- as.data.frame(freq_table)
+
+
+ggplot(freq_table, aes(x=Var2, y=Freq, fill=Var1)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())
+#ggsave("CD177_Propchart.pdf", height = 2.25, width=3.5)
+```
+
+```{r}
+test <- cbind.data.frame(subset@meta.data$Type,subset@meta.data$clonality, subset@meta.data$CD177, subset@meta.data$fate)
+colnames(test) <- c("Type", "clonality", "CD177", "Fate")
+```
+
+```{r}
+ggplot(subset(test, !is.na(clonality) & Type=="TM"), aes(x=CD177, fill=clonality)) +
+  geom_bar(stat="count", position="fill") 
+```
+
+***Differential expression
+```{r}
+
+```
+
+
+#Cell cycle analysis
+
+We previously identified our  cells using Spearman correlational analysis on the Blue+Encode and HPCA datasets. To reduce the affects of cell cycle on the clustering analysis, we will need to assign cell cycle state. The process and files required are available at the Sajita Laboratory located [here.](https://satijalab.org/seurat/cell_cycle_vignette.html#assign-cell-cycle-scores).
+
+```{r}
+cc.genes <- readLines(con = "./ProcessedData/regev_lab_cell_cycle_genes.txt")
+
+# We can segregate this list into markers of G2/M phase and markers of S
+# phase
+s.genes <- cc.genes[1:43]
+g2m.genes <- cc.genes[44:97]
+```
+
+```{r}
+cellCycle <- CellCycleScoring(object = subset, s.genes = s.genes, g2m.genes = g2m.genes, 
+    set.ident = TRUE)
+```
+
+
+```{r}
+freq_table <- prop.table(x = table(cellCycle@meta.data[, "Phase"], cellCycle@meta.data[, "fate"]), 
+    margin = 2)
+freq_table <- as.data.frame(freq_table)
+ggplot(freq_table, aes(x=Var2, y=Freq, fill=Var1)) + 
+  geom_bar(stat="identity", position="fill", color="black", lwd=0.25) + 
+  theme(axis.title.x = element_blank())
+ggsave("PropChart_ofCellcycle.pdf", height=2,width=4)
+```
+
+```{r}
+DF_CC <- as.data.frame(cellCycle@meta.data)
+table(DF_CC$Phase, DF_CC$fate)
+```
+
+
+*** 
+SingleR Re-analysis by cell fate
+
+In addition to cell-type information, SingleR will run a ssGSEA, built into the function are 4 gene sets: "Naive", "Exhaustion", "Cytotoxicity", "Cell_Cycle". Here we will use the subset Seurat object to run through the SingleR function again
+
+```{r}
+singler = CreateSinglerObject(subset@raw.data, project.name = "Renal", annot = NULL, project.name, min.genes = 200,
+  technology = "10X", species = "Human", citation = "",
+  ref.list = list(), normalize.gene.length = F, variable.genes = "de",
+  fine.tune = T, do.signatures = T, clusters = NULL, do.main.types = T, 
+  reduce.file.size = T, numCores = 4)
+
+singler$seurat = subset # (optional)
+singler$meta.data$orig.ident = subset@meta.data$orig.ident # the original identities, if not supplied in 'annot'
+```
+
+Grabbing the meta data from the subset object in order to graph the ssGSEA enrichment for each of the cell fates
+```{r}
+meta <- subset@meta.data
+meta <- merge(meta, signature, by.x = "row.names", by.y="id")
+meta2 <- meta[,c(1,10:14)]
+
+library(reshape2)
+melted <- melt(meta2, id.vars = c("Row.names", "fate"))
+melted$fate  <- factor(melted$fate, levels = c("Pre", "CellFate1", "CellFate2")) #just defining the order I want
+melted$variable  <- factor(melted$variable, levels = c("Naive", "Exhaustion", "Cytotoxicity", "Cell_Cycle")) #just defining the order I want
+
+ggplot(melted, aes(x=fate, y=value)) + 
+  geom_boxplot(outlier.size=0.5, lwd=0.5) + 
+  facet_wrap(~variable) + 
+  theme(axis.title = element_blank())
+ggsave("scores.pdf", height=3, width=2.5)
+```
+
+
+***
+#Adding clonotype information
+
+So the next series of code is poorly written - it is specifically for a supplemental figure looking at the clonality of the Tregs. So bear with me on this.
+
+```{r}
+clonotype <- read.delim("./ProcessedData/Renal_clontypeMeta_Master.txt")
+```
+
+
+```{r}
+clonotypes2 <- clonotype
+clonotypes2$names <- row.names(clonotypes2)
+clonotypes2 <- merge(clonotypes2, x, by.x = "cdr3", by.y="V1")
+clonotypes2 <- clonotypes2[,-c(5:6)]
+#Defining the frequency as either 1, 2 or 3 
+clonotypes2 <- clonotypes2 %>%
+  mutate(clonal = ifelse(Freq == 1, "One", ifelse(Freq == 2, "Two", "Three")))
+row.names(clonotypes2) <- clonotypes2$names
+```
+
+Adding the clonal data back to the subset meta.data
+```{r}
+row.names(clonotype2) <- clonotype2$barcode
+subset <- AddMetaData(object = subset, metadata = clonotype2)
+```
+
+Now we are running the subset Seurat object of isolated Tregs back through the steps of monocle in order to have the ordinal construction where we can look at clonality
+```{r}
+monocle2 <- importCDS(subset, import_all = TRUE)
+
+monocle2 <- estimateSizeFactors(monocle2)
+monocle2 <- suppressWarnings(estimateDispersions(monocle2))
+monocle2 <- detectGenes(monocle2, min_expr = 0.1)
+expressed_genes2 <- row.names(subset(fData(monocle2), num_cells_expressed >= 10))
+diff_test_res3 <- differentialGeneTest(monocle2[expressed_genes2,], fullModelFormulaStr = "~Type")
+ordering_genes2 <- row.names (subset(diff_test_res3, qval < 0.01))
+monocle2 <- setOrderingFilter(monocle2, ordering_genes2)
+monocle2 <- reduceDimension(monocle2, method = 'DDRTree')
+monocle2 <- orderCells(monocle2)
+
+plot_cell_trajectory(monocle2, color_by = "State")
+plot_cell_trajectory(monocle2, color_by = "Freq")
+plot_cell_trajectory(monocle2, color_by = "Type")
+```
+
+Cell Trajectory by Clonotype
+```{r}
+plot_cell_trajectory(monocle2, color_by = "clonality") + 
+   scale_color_manual(values=c("#FDE723", "#430154", "#22958B"))
+ggsave("CellTrajectory_clone_v3.eps", height=4.25, width=4.5)
+```
+
+```{r}
+writeLines(capture.output(sessionInfo()), "sessionInfo.txt")
+```
+
